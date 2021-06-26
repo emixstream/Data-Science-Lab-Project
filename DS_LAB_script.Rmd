@@ -1,0 +1,725 @@
+---
+title: "paper_final"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_current$get(c(
+  "cache",
+  "cache.path",
+  "cache.rebuild",
+  "dependson",
+  "autodep"
+))
+knitr::opts_knit$set(root.dir = '/Users/valerioschips/Desktop/DSLab/Progetto/Dati\ Energia')
+```
+
+# DSLab Report
+
+\
+\
+
+## Configurazione
+
+Preferences -> R Markdown -> Evaluate Chunks in Directory: Current
+
+
+## Caricamento Librerie
+
+```{r warning = FALSE, message = FALSE}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(forecast)
+library(tseries)
+```
+
+
+
+## Caricamento Dati
+
+```{r}
+setwd('/Users/valerioschips/Desktop/DSLab/Progetto/Dati\ Energia')
+```
+
+```{r include=FALSE}
+setwd('/Users/valerioschips/Desktop/DSLab/Progetto/Dati\ Energia')
+load(file = "G_Env.RData")
+```
+
+
+
+Variabili globali contenti i nomi dei file e delle colonne
+
+```{r}
+g_build <- c("U1", "U6")
+g_year <- c("18", "19", "20")
+g_month <- c("01","02","03","04","05","06","07","08","09","10","11","12")
+g_columns_subset <- c("POD", "DATA", "ORA", "FL_ORA_LEGALE", "CONSUMO_ATTIVA_PRELEVATA", "CONSUMO_REATTIVA_INDUTTIVA_PRELEVATA", "POTENZA_MASSIMA", "TIPO_DATO")
+g_columns_num <- c("CONSUMO_ATTIVA_PRELEVATA", "CONSUMO_REATTIVA_INDUTTIVA_PRELEVATA", "POTENZA_MASSIMA")
+g_aggregate_level <- c("Def", "Hour", "Day", "Month", "Year")
+g_meteo_column <- c("tavg", "tmin", "tmax", "prcp", "pres")
+```
+
+Funzioni per il caricamento dei Datase, Standardizzazione delle colonne e Aggregazione
+
+```{r}
+make_numeric_column <- function(p_df){
+  for (x in g_columns_num){
+    p_df[,x] <- as.numeric(unlist(p_df[,x]))
+  }
+  return(p_df)
+}
+
+check_columns_subset <- function(p_df){
+  for (x in g_columns_subset){
+    if (!(x %in% colnames(p_df))){
+      p_df[, x] <- NA
+    }
+  }
+  return(p_df)
+}
+
+single_energy_table <- function(build=NULL, year=NULL, month=NULL){
+  path <- c(build, year)
+  path <- paste(path, collapse = "/")
+  tmp_path <- c(path, "/" ,month, ".xlsx")
+  tmp_path <- paste(tmp_path, collapse = "")
+  ret_df <- read_excel(tmp_path)
+  ret_df <- check_columns_subset(ret_df)
+  ret_df <- ret_df[,g_columns_subset]
+  ret_df<-make_numeric_column(ret_df)
+  ret_df$DATA <- as.Date(as.character(ret_df$DATA), "%Y%m%d")
+  ret_df$WDAY <- as.POSIXlt(ret_df$DATA)$wday
+  ret_df$ENERGIA_CONSUMATA <- ret_df$CONSUMO_ATTIVA_PRELEVATA * 900
+  return(ret_df)
+}
+
+single_build_energy_table <- function(build=NULL, year=NULL, month=NULL){
+  if (is.null(year)) {
+    if (is.null(month)){
+      month_list <- g_month
+    }else{
+      month_list <- month
+    }
+    ret_df <- single_energy_table(build, g_year[1], month_list[1])
+    st_index_month <- 2
+    for (y in 1:length(g_year)) {
+      if (length(month_list) >= st_index_month){
+        for (x in st_index_month:length(month_list)) {
+          tmp_data <- single_energy_table(build, g_year[y], month_list[x])
+          ret_df <- rbind(ret_df, tmp_data)
+        }
+      }
+      st_index_month <- 1
+    }
+    return(ret_df)
+  }
+  if (is.null(month)) {
+    if (is.null(year)){
+      year_list <- g_year
+    }else{
+      year_list <- year
+    }
+    ret_df <- single_energy_table(build, year_list[1], g_month[1])
+    st_index_month <- 2
+    for (y in 1:length(year_list)) {
+      for (x in st_index_month:length(g_month)) {
+        tmp_data <- single_energy_table(build, year_list[y], g_month[x])
+        ret_df <- rbind(ret_df, tmp_data)
+      }
+      st_index_month <- 1
+    }
+    return(ret_df)
+  }
+  
+  ret_df <- single_energy_table(build, year, month[1])
+  if(length(month) >1){
+    for (x in 2:length(month)) {
+      tmp_data <- single_energy_table(build, year, month[x])
+      ret_df <- rbind(ret_df, tmp_data)
+    }
+  }
+  return(ret_df)
+}
+
+both_build_energy_table <- function(year=NULL, month=NULL, aggregate = "Def"){
+    U1 <- single_build_energy_table(g_build[1], year, month)
+    U6 <- single_build_energy_table(g_build[2], year, month)
+    if (aggregate != "Def"){
+      U1 <- time_aggregate(U1, aggregate)
+      U6 <- time_aggregate(U6, aggregate)
+    }
+    if (aggregate == "Month") {
+      ret_df <- merge(U1, U6, by = c("DATA"), all = TRUE, suffixes= c("_U1", "_U6"))
+    }else if(aggregate == "Day"){
+      ret_df <- merge(U1, U6, by = c("DATA", "WDAY", "FL_ORA_LEGALE"), all = TRUE, suffixes= c("_U1", "_U6"))
+    }else{
+      ret_df <- merge(U1, U6, by = c("DATA", "ORA", "WDAY", "FL_ORA_LEGALE"), all = TRUE, suffixes= c("_U1", "_U6"))
+    }
+    return(ret_df)
+}
+time_aggregate <- function(p_df, type){
+  p_df$DAY <- format(p_df$DATA, "%d")
+  p_df$MONTH <- format(p_df$DATA, "%m")
+  p_df$YEAR <- format(p_df$DATA, "%Y")
+  if ("ORA" %in% colnames(p_df)){
+    p_df$ORA <- as.integer(p_df$ORA/10000)
+  }
+  if (type == "Hour"){
+    p_df_copy <- p_df %>% group_by(YEAR, MONTH, DAY, ORA) %>% summarise(DATA = min(DATA), CONSUMO_ATTIVA_PRELEVATA_AVG = mean(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MED = median(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MAX = max(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MIN = min(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), ENERGIA_CONSUMATA = sum(ENERGIA_CONSUMATA, na.rm = TRUE), FL_ORA_LEGALE = min(FL_ORA_LEGALE), POTENZA_MASSIMA = max(POTENZA_MASSIMA), WDAY = max(WDAY))
+    p_df_copy <- subset(p_df_copy, select = -c(DAY))
+  }else if(type == "Day"){
+    p_df_copy <- p_df %>% group_by(YEAR, MONTH, DAY) %>% summarise(DATA = min(DATA), CONSUMO_ATTIVA_PRELEVATA_AVG = mean(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MED = median(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MAX = max(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MIN = min(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), ENERGIA_CONSUMATA = sum(ENERGIA_CONSUMATA, na.rm = TRUE), FL_ORA_LEGALE = min(FL_ORA_LEGALE), POTENZA_MASSIMA = max(POTENZA_MASSIMA), WDAY = max(WDAY))
+    p_df_copy <- subset(p_df_copy, select = -c(DAY))
+  }else if(type == "Month"){
+    p_df_copy <- p_df %>% group_by(YEAR, MONTH) %>% summarise(DATA = min(DATA), CONSUMO_ATTIVA_PRELEVATA_AVG = mean(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MED = median(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MAX = max(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MIN = min(CONSUMO_ATTIVA_PRELEVATA, na.rm = TRUE), ENERGIA_CONSUMATA = sum(ENERGIA_CONSUMATA, na.rm = TRUE), POTENZA_MASSIMA = max(POTENZA_MASSIMA))
+  }else if(type == "dayMonth"){
+    p_df_copy <- p_df %>% group_by(YEAR, MONTH) %>% summarise(DATA = min(DATA), CONSUMO_ATTIVA_PRELEVATA_AVG = mean(CONSUMO_ATTIVA_PRELEVATA_AVG, na.rm = TRUE), CONSUMO_ATTIVA_PRELEVATA_MED = median(CONSUMO_ATTIVA_PRELEVATA_MED, na.rm = TRUE), ENERGIA_CONSUMATA = sum(ENERGIA_CONSUMATA, na.rm = TRUE))
+  }
+  p_df_copy$DATA <- as.Date(p_df_copy$DATA, "%Y%m%d")
+  p_df_copy <- subset(p_df_copy, select = -c(YEAR, MONTH))
+  
+  return(p_df_copy)
+}
+
+weather_data_load<-function(p_df, year){
+  path <- c("METEO", year[1])
+  path <- paste(path, collapse = "/")
+  path <- c(path, "xlsx")
+  path <- paste(path, collapse = ".")
+  ret_df <- read_excel(path)
+  if (length(year) > 1){
+    for (x in 2:length(year)){
+      path <- c("METEO", year[x])
+      path <- paste(path, collapse = "/")
+      path <- c(path, "xlsx")
+      path <- paste(path, collapse = ".")
+      tmp_data <- read_excel(path)
+      ret_df <- rbind(ret_df, tmp_data)
+    }
+  }
+  for (x in g_meteo_column){
+    ret_df[,x] <- as.numeric(unlist(ret_df[,x]))
+  }
+  ret_df$DATA <- as.Date(as.character(as.POSIXct(ret_df$DATA, 'GMT')))
+  ret_df <- merge(p_df, ret_df, by = c("DATA"), all.x = TRUE)
+  return(ret_df)
+}
+```
+
+Funzione per aggiungere la variabile aperto chiuso ad un dataframe.
+
+```{r}
+add_dummy_open <- function(p_df){
+p_df$WDAY <- as.POSIXlt(p_df$DATA)$wday
+p_df$aperto <- ifelse(p_df$WDAY == 0, 0, 1)
+p_df[(p_df$DATA >= "2019-01-01") & (p_df$DATA <= "2019-01-04"),]$aperto <- 0
+p_df[p_df$DATA == "2019-01-06",]$aperto <- 0
+p_df[(p_df$DATA >= "2019-03-07") & (p_df$DATA <= "2019-03-08"),]$aperto <- 0
+p_df[(p_df$DATA >= "2019-04-18") & (p_df$DATA <= "2019-04-19"),]$aperto <- 0
+p_df[(p_df$DATA >= "2019-04-21") & (p_df$DATA <= "2019-04-23"),]$aperto <- 0
+p_df[p_df$DATA == "2019-04-25",]$aperto <- 0
+p_df[p_df$DATA == "2019-05-01",]$aperto <- 0
+p_df[p_df$DATA == "2019-06-02",]$aperto <- 0
+p_df[(p_df$DATA >= "2019-08-11") & (p_df$DATA <= "2019-08-16"),]$aperto <- 0
+p_df[p_df$DATA == "2019-11-01",]$aperto <- 0
+p_df[(p_df$DATA > "2019-12-07") & (p_df$DATA <= "2019-12-08"),]$aperto <- 0
+p_df[(p_df$DATA >= "2019-12-21") & (p_df$DATA <= "2019-12-31"),]$aperto <- 0
+
+p_df[(p_df$DATA >= "2018-01-01") & (p_df$DATA <= "2018-01-07"),]$aperto <- 0
+p_df[(p_df$DATA >= "2018-02-15") & (p_df$DATA <= "2018-02-18"),]$aperto <- 0
+p_df[(p_df$DATA >= "2018-03-29") & (p_df$DATA <= "2018-04-03"),]$aperto <- 0
+p_df[p_df$DATA == "2018-04-25",]$aperto <- 0
+p_df[p_df$DATA == "2018-05-01",]$aperto <- 0
+p_df[p_df$DATA == "2018-06-02",]$aperto <- 0
+p_df[p_df$DATA == "2018-08-15",]$aperto <- 0
+p_df[p_df$DATA == "2018-11-01",]$aperto <- 0
+p_df[(p_df$DATA >= "2018-12-07") & (p_df$DATA <= "2018-12-08"),]$aperto <- 0
+p_df[(p_df$DATA > "2018-12-23") & (p_df$DATA <= "2018-12-30"),]$aperto <- 0
+
+
+p_df[(p_df$DATA >= "2020-01-01") & (p_df$DATA <= "2020-01-07"),]$aperto <- 0
+p_df[(p_df$DATA >= "2020-02-27") & (p_df$DATA <= "2020-02-29"),]$aperto <- 0
+p_df[(p_df$DATA >= "2020-04-09") & (p_df$DATA <= "2020-04-14"),]$aperto <- 0
+p_df[p_df$DATA == "2020-04-25",]$aperto <- 0
+p_df[p_df$DATA == "2020-05-01",]$aperto <- 0
+p_df[p_df$DATA == "2020-06-02",]$aperto <- 0
+p_df[p_df$DATA == "2020-08-15",]$aperto <- 0
+p_df[p_df$DATA == "2020-11-01",]$aperto <- 0
+p_df[(p_df$DATA >= "2020-12-23") & (p_df$DATA <= "2020-12-31"),]$aperto <- 0
+return(p_df)
+}
+
+```
+
+
+
+## Cap 1.5 Missing Value
+
+### Previsione U6 Giugno
+
+
+Funzione Sliding Window
+
+```{r}
+sliding_window <- function(p_df, p_column, p_window, p_st_date, p_foreward, p_lenght){
+  
+  p_lenght <- p_lenght + 14
+  
+  b <- .5
+  p_weight <- c(.5)
+  for (a in 1:(p_foreward - 2)){
+    b <- b/2
+    p_weight <- append(p_weight, b)
+    a <- a+1
+  }
+  p_weight <- append(p_weight, 1-sum(p_weight))
+  
+  p_df <- p_df[1:(p_window+p_foreward-1), c("DATA", p_column)]
+  
+  p_st_date <- as.Date(p_st_date,format="%Y-%m-%d")
+  end_date <- as.Date(p_st_date,format="%Y-%m-%d") + p_window - 1
+  
+  
+  ts_st_date <- c(as.numeric(format(as.Date(p_st_date,format="%Y-%m-%d"), format = "%m")))
+  ts_st_date <- append(ts_st_date, as.numeric(format(as.Date(p_st_date,format="%Y-%m-%d"), format = "%d")))
+  ts_end_date <- c(as.numeric(format(as.Date(end_date,format="%Y-%m-%d"), format = "%m")))
+  ts_end_date <- append(ts_end_date, as.numeric(format(as.Date(end_date,format="%Y-%m-%d"), format = "%d")))
+  
+  result_df <- p_df
+  tmp_df <- data.frame(DATA= seq((end_date+p_foreward), (end_date +(p_lenght - p_foreward)), "day"))
+  tmp_df[,p_column] <- 0
+  result_df <- rbind(result_df, tmp_df)
+  
+  df_row <- nrow(result_df)
+  
+  start_df <- result_df[(result_df$DATA >= p_st_date) & (result_df$DATA <= end_date),]
+  for (i in (p_window+1):(df_row-1)){
+    analysis_ts <- ts(start_df[, p_column], frequency = 7, start = c(1,1))
+    tbats_fitted <- auto.arima(analysis_ts)
+    fore <- forecast(tbats_fitted, h=p_foreward)
+    
+    
+    tmp_df <- result_df[(i):(i+p_foreward-1), c("DATA", p_column)]
+    weighted_val <- p_weight*as.vector(fore$mean)
+    tmp_df$fitted_v <- weighted_val
+    names(tmp_df)[length(names(tmp_df))]<-paste0("V", i)
+    result_df <- merge(result_df, tmp_df, all.x = TRUE)
+    
+    if( (i > (p_window + p_foreward-1))  ){
+      result_df[i, p_column] <- rowSums(result_df[i,-c(1,2)], na.rm = TRUE)
+    }
+    
+    end_date <- end_date + 1
+    p_st_date <- p_st_date + 1
+    ts_st_date <- c(as.numeric(format(as.Date(p_st_date,format="%Y-%m-%d"), format = "%m")))
+    ts_st_date <- append(ts_st_date, as.numeric(format(as.Date(p_st_date,format="%Y-%m-%d"), format = "%d")))
+    ts_end_date <- c(as.numeric(format(as.Date(end_date,format="%Y-%m-%d"), format = "%m")))
+    ts_end_date <- append(ts_end_date, as.numeric(format(as.Date(end_date,format="%Y-%m-%d"), format = "%d")))
+    
+    start_df <- result_df[(result_df$DATA >= p_st_date) & (result_df$DATA <= end_date),]
+  }
+  return(result_df)
+}
+```
+
+
+
+```{r message = FALSE, warning = FALSE}
+u6_df <- single_build_energy_table("u6", year = c("18","19","20"))
+u6_df <- time_aggregate(u6_df, "Day")
+u6_df$Target_Column <- u6_df$CONSUMO_ATTIVA_PRELEVATA_AVG
+tag_name <- "CONSUMO_ATTIVA_PRELEVATA_AVG"
+```
+
+
+Valutiamo la previsione su Febbraio:
+
+```{r eval=FALSE}
+february_predict_sw <- sliding_window(u6_df, "Target_Column", 755, "2018-01-01", 7, 29)
+
+february_predict_sw <- data.frame(Data=february_predict_sw[,1], Real_value=u6_df[1:nrow(february_predict_sw),]$Target_Column, Fitted_value=february_predict_sw[, "Target_Column"])
+february_predict_sw$acc <- with(february_predict_sw, abs(Real_value - Fitted_value)/Real_value * 100)
+```
+
+
+```{r}
+february_predict_sw <- february_predict_sw[february_predict_sw$Data >= "2020-01-01" & february_predict_sw$Data < "2020-03-01",]
+legend <- c("Real_value" = "red", "Fitted_value" = "blue")
+ggplot()+
+  geom_line(data = february_predict_sw, aes(x= Data, y=Real_value, group=1, color="Real_value"), size=1)+
+  geom_line(data = february_predict_sw, aes(x= Data, y=Fitted_value, group=1, color="Fitted_value"), size=1)+
+  labs(x = "Data", y = "Value", color = "Legend") +
+  scale_colour_manual(values=legend)
+```
+
+Prevision Giugno:
+
+```{r eval=FALSE}
+june_predict_sw <- sliding_window(u6_df, "Target_Column", 876, "2018-01-01", 7, 30)
+june_predict_sw <- data.frame(Data=june_predict_sw[,1], Real_value=u6_df[1:nrow(june_predict_sw),]$Target_Column, Fitted_value=june_predict_sw[, "Target_Column"])
+june_predict_sw$acc <- with(june_predict_sw, abs(Real_value - Fitted_value)/Real_value * 100)
+```
+
+```{r}
+june_predict_sw <- june_predict_sw[june_predict_sw$Data >= "2020-05-01" & june_predict_sw$Data < "2020-07-01",]
+ggplot()+
+  geom_line(data = june_predict_sw, aes(x= Data, y=Fitted_value, group=1), color="blue", size=1)+
+  geom_vline(xintercept = as.Date("2020-06-01"), color = "red", linetype="dashed")
+```
+Sostituiamo i dati mancanti nel mese Giugno 2020 - U6:
+
+```{r}
+june_predict_subset_sw <- june_predict_sw[june_predict_sw$Data >= "2020-06-01" & june_predict_sw$Data < "2020-07-01",c("Data", "Fitted_value")]
+
+colnames(june_predict_subset_sw) <- c("DATA",tag_name)
+
+u6_df <- u6_df[!(u6_df$DATA >= "2020-06-01" & u6_df$DATA < "2020-07-01"),]
+
+for (x in colnames(u6_df)){
+  if (!(x %in% colnames(june_predict_subset_sw))){
+    june_predict_subset_sw[, x] <- NA
+  }
+}
+u6_df <- rbind(u6_df, june_predict_subset_sw)
+u6_df[(u6_df$DATA >= "2020-06-01" & u6_df$DATA < "2020-07-01"),]$ENERGIA_CONSUMATA <- u6_df[(u6_df$DATA >= "2020-06-01" & u6_df$DATA < "2020-07-01"),]$CONSUMO_ATTIVA_PRELEVATA_AVG * 24 * 60 * 60
+u6_df<-u6_df[order(u6_df$DATA),]
+```
+
+```{r}
+rm(june_predict_subset_sw)
+```
+
+
+
+## Cap 2.1 Analisi grafiche e Test
+
+```{r message = FALSE, warning = FALSE}
+u1 <- single_build_energy_table(build = "U1", year = c("18", "19", "20"))
+u1 <- time_aggregate(u1, "Day")
+u6 <- u6_df
+both_build_df <- merge(u1, u6, by = c("DATA"), all = TRUE, suffixes= c("_U1", "_U6"))
+tag_name <- "CONSUMO_ATTIVA_PRELEVATA_AVG"
+```
+
+
+```{r}
+both_build_ts <- ts(both_build_df, frequency =365, start = c(2018,1), end = c(2021,1))
+
+autoplot(both_build_ts[,c(paste0(tag_name, "_U1"),paste0(tag_name, "_U6"))])+
+           labs(x="Years", y="Kilo-watt", title="Confronto U1-U6")+  theme(legend.position="none")
+```
+
+### Figura 1: Confronto U1-U6
+
+```{r message = FALSE, warning = FALSE}
+u1 <- time_aggregate(u1, "dayMonth")
+u6 <- time_aggregate(u6, "dayMonth")
+ts_month_u1 <- ts(u1[, tag_name], frequency = 12, start = c(2018,1), end = c(2020,12))
+ts_month_u6 <- ts(u6[, tag_name], frequency = 12, start = c(2018,1), end = c(2020,12))
+```
+
+
+
+```{r}
+ggseasonplot(ts_month_u1, year.labels=TRUE, year.labels.left=TRUE)
+```
+
+### Figura 2: Seasonal plot U1
+
+```{r}
+ggseasonplot(ts_month_u6, year.labels=TRUE, year.labels.left=TRUE)
+```
+
+### Figura 3: Seasonal plot U6
+
+```{r}
+ggsubseriesplot(ts_month_u1)
+```
+
+
+```{r}
+ggsubseriesplot(ts_month_u6)
+```
+
+### Figura 4: Subseries plot U1-U6
+
+```{r}
+checkresiduals(arima(ts_month_u1))
+```
+
+### Figura 5: Residuals Analysis U1
+
+```{r}
+checkresiduals(arima(ts_month_u6))
+```
+
+### Figura 6: Residuals Analysis U6
+
+```{r}
+pacf(ts_month_u1)
+```
+```{r}
+pacf(ts_month_u6)
+```
+
+```{r}
+ts_day_u1 <- ts(both_build_df[,paste0(tag_name, "_U1")], frequency =365, start = c(2018,1), end = c(2021,1))
+ts_day_u6 <- ts(both_build_df[,paste0(tag_name, "_U6")], frequency =365, start = c(2018,1), end = c(2021,1))
+```
+
+Augmented-Dickey-Fuller Test
+
+```{r}
+adf.test(ts_day_u1, alternative = c("stationary", "explosive"),
+         k = trunc((length(x)-1)^(1/3)))
+```
+
+
+```{r}
+adf.test(ts_day_u6, alternative = c("stationary", "explosive"),
+         k = trunc((length(x)-1)^(1/3)))
+```
+
+
+### Figura 7: Partial AutoCorreleation U1-U6
+
+
+## Cap 2.6 Modello ARIMA con regressione temperatura, apertura/chiusura ed Effetto Covid
+
+Carichiamo i dati meteo e aggiungiamo le variabili aperto/chiuso e covid 
+
+```{r}
+both_build_df <- weather_data_load(both_build_df, c("18","19","20"))
+both_build_df <- add_dummy_open(both_build_df)
+both_build_df$COVID <- 0
+both_build_df[both_build_df$DATA > "2020-03-09",]$COVID <- 1
+```
+
+#### Regressione lineare U1
+
+```{r}
+summary(lm(both_build_df[,paste0(tag_name, "_U1")] ~ aperto + tavg + COVID, both_build_df))
+```
+#### Regressione lineare U6
+
+```{r}
+summary(lm(both_build_df[,paste0(tag_name, "_U6")] ~ aperto + tavg + COVID, both_build_df))
+```
+
+#### Modello arima con regressione U1
+
+```{r eval = FALSE}
+M1 <- arima(ts_day_u1, order = c(3,1,1), xreg = both_build_df[, c("tavg", "aperto", "COVID")], seasonal = list(order = c(0,1,0), period = 365),  method = "ML")
+``` 
+```{r}
+summary(M1)
+```
+
+
+#### Modello auto arima U1
+
+```{r eval = FALSE}
+M2 <- auto.arima(ts_day_u1)
+```
+```{r}
+summary(M2)
+```
+
+
+
+
+## Cap 2.8 Decomposizione e ricomposizione della serie con MSTL
+
+```{r message = FALSE, warning = FALSE}
+u1 <- single_build_energy_table(build = "U1", year = c("18", "19", "20"))
+u1 <- time_aggregate(u1, "Day")
+u1 <- u1[u1$DATA<"2020-01-02",]
+u1$Target_Column <- u1$CONSUMO_ATTIVA_PRELEVATA_AVG
+tag_name <- "CONSUMO_ATTIVA_PRELEVATA_AVG"
+```
+
+Decomposizione U1:
+
+```{r}
+u1ts <- msts(u1$Target_Column, ts.frequency = 365, start = c(01,2018), seasonal.periods = c(7,365))
+u1ts_dec<-mstl(u1ts, s.window = "periodic")
+u1ts_dec %>% autoplot()
+rm(u1ts)
+```
+
+### Figura 9 -Decomposizione multi stagionale U1 – 2018-2019
+
+```{r}
+u1ts_comp <- as.data.frame(u1ts_dec)
+u1_seasonal365 <- u1ts_comp$Seasonal365
+u1_seasonal365 <- as.data.frame(u1_seasonal365)
+u1_seasonal365$stand_seasonal <- u1_seasonal365$u1_seasonal365/1300
+
+u1_seasonal <- data.frame(date=seq(from = as.Date("2018-01-01"), by = "day", length.out = 730), seasonal = u1_seasonal365[1:730,]$stand_seasonal)
+
+plot.ts(u1_seasonal$seasonal)
+rm(u1ts_dec, u1ts_comp, u1_seasonal365)
+```
+
+Decomposizione U6:
+
+```{r}
+u6 <- u6_df
+u6 <- u6[u6$DATA<"2020-01-02",]
+u6$Target_Column <- u6$CONSUMO_ATTIVA_PRELEVATA_AVG
+
+u6ts<-msts(u6$Target_Column, ts.frequency = 365, start = c(01,2018), seasonal.periods = c(7,365))
+u6ts_dec<-mstl(u6ts, s.window = "periodic")
+u6ts_dec %>% autoplot()
+u6ts_comp <- as.data.frame(u6ts_dec)
+u6ts_comp$date <- seq(from = as.Date("2018-01-01"), by = "day", length.out = nrow(u6ts_comp))
+rm(u6ts, u6ts_dec)
+```
+
+### Figura 9 -Decomposizione multi stagionale U6 – 2018-2019
+
+
+Selezioniamo i periodi di interesse per la stagionalità annuale di U1 e U6:
+
+```{r}
+u1_seasonal$is_hot <- rep(0, nrow(u1_seasonal))
+
+u1_seasonal[(u1_seasonal$date >= "2018-05-01" & u1_seasonal$date<"2018-10-01"),]$is_hot <- 1
+
+u1_seasonal[(u1_seasonal$date >= "2019-05-01" & u1_seasonal$date<"2019-10-01"),]$is_hot <- 1
+
+u1_seasonal$seasonal_active <- u1_seasonal$is_hot * u1_seasonal$seasonal
+```
+
+```{r}
+u6ts_comp$is_hot <- rep(1, nrow(u6ts_comp))
+
+u6ts_comp[(u6ts_comp$date >= "2018-05-01" & u6ts_comp$date<"2018-10-01"),]$is_hot <- 0
+
+u6ts_comp[(u6ts_comp$date >= "2019-05-01" & u6ts_comp$date<"2019-10-01"),]$is_hot <- 0
+
+u6ts_comp$Seasonal365_Active <- u6ts_comp$Seasonal365 * u6ts_comp$is_hot
+```
+
+
+Ricomponiamo la serie U6 con stagionalità estiva U1:
+
+```{r}
+u6ts_rec <- u6ts_comp$Seasonal7 + u6ts_comp$Trend+ u6ts_comp$Remainder+  (u1_seasonal$seasonal_active*5311) + u6ts_comp$Seasonal365_Active
+
+u6ts_rec<-ts(u6ts_rec, frequency = 365, start = c(2018,1), end = c(2020,1))
+plot.ts(u6ts_rec)
+rm(u6ts_comp, u1_seasonal)
+```
+
+### Figura 10 - Serie storica U6 trasformata
+
+
+Calcoliamo ora i consumi effettivi con e senza teleraffreddamento. \
+\
+
+```{r}
+monthDays <- c(31,28,31,30,31,30,31,31,30,31,30,31)
+u6_rec <- data.frame(CONS=as.matrix(u6ts_rec), DATA=time(u6ts_rec))
+u6_rec_consumo <- 0
+for (m in 1:nrow(u6_rec)) {
+  u6_rec_consumo <- u6_rec_consumo + (24*u6_rec[m,]$CONS)
+}
+print(paste("Consumi senza teleraffreddamento:", paste(as.character(u6_rec_consumo), "kWh")))
+rm(monthDays, u6_rec, u6ts_rec)
+```
+
+```{r}
+monthDays <- c(31,28,31,30,31,30,31,31,30,31,30,31)
+u6_consumo <- 0
+for (m in 1:nrow(u6)) {
+  u6_consumo <- u6_consumo + (24*u6[m,]$Target_Column)
+}
+print(paste("Consumi con teleraffreddamento:", paste(as.character(u6_consumo), "kWh")))
+```
+
+```{r}
+print(paste("Risparmio in euro in due anni:", paste(as.character(round((u6_rec_consumo-u6_consumo)*0.48,digits = 3)), "€")))
+```
+```{r}
+print(paste("Risparmio in euro per anno:", paste(as.character(round((u6_rec_consumo-u6_consumo)*0.48/2,digits = 3)), "€")))
+```
+```{r}
+rm(u6,u1,u6_rec_consumo,u6_consumo)
+```
+
+
+
+
+
+## Cap 2.9 Metodo ARIMA U1 e confronto
+
+```{r eval = FALSE}
+train <- window(ts_day_u1, end=c(2020,2))
+h <-  length(ts_day_u1) - length(train)
+M3 <- auto.arima(train, lambda=1, biasadj=TRUE)
+ARIMA_U1 <- forecast(M3, h=h)
+```
+
+
+```{r}
+autoplot(ARIMA_U1)
+```
+
+### Figura 12: Bande di confidenza forecast U1
+
+
+```{r}
+autoplot(ts_day_u1) +
+  autolayer(ARIMA_U1, series="ARIMA", PI=FALSE) +
+  xlab("Year") + ylab(" kW") +
+  ggtitle("Confronto ARIMA_U1 con e senza pandemia")
+```
+
+### Figura 13: Confronto Covid - Non Covid U1
+
+
+## Cap 2.10 Metodo NEURALE U6 e confronto
+
+
+```{r}
+set.seed(1234)
+train <- window(ts_day_u6, end=c(2020,2))
+h <-  length(ts_day_u6) - length(train)
+NNAR_U6 <- forecast(nnetar(train), h=h)
+
+autoplot(ts_day_u6) +
+  autolayer(NNAR_U6, series="NNAR", PI=FALSE) +
+  xlab("Year") + ylab(" kW") +
+  ggtitle("Confronto NN_U6 con e senza pandemia")
+```
+
+### Figura 14: Confronto Covid - Non Covid U6
+
+
+```{r}
+set.seed(1234)
+train <- window(ts_day_u1, end=c(2020,2))
+h <-  length(ts_day_u1) - length(train)
+NNAR_U1 <- forecast(nnetar(train), h=h)
+
+autoplot(ts_day_u1) +
+  autolayer(NNAR_U1, series="NNAR", PI=FALSE) +
+  xlab("Year") + ylab(" Confronto NN_U1 con e senza pandemia") +
+  ggtitle("NN")
+```
+
+### Figura 15: Confronto Covid - Non Covid U1
+
+
+
+
+
+
+
