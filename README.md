@@ -3,11 +3,11 @@ This folder contains the attachments of the Data Science Lab project
 
 Prject members:
 
-Emanuele Marnati
+### Emanuele Marnati
 
-Marco Branciforti
+### Marco Branciforti
 
-Valerio schips
+### Valerio schips
 
 Project Title:
 
