@@ -2,13 +2,14 @@
 This folder contains the attachments of the Data Science Lab project
 
 *ita*
+
 Sono presenti 2 file e 1 cartella d'immagini topografiche:
 
-RMD_final.Rmd: il file in R markdown contenente tutto il codice del progetto DS Lab.
+*RMD_final.Rmd*: il file in R markdown contenente tutto il codice del progetto DS Lab.
 
-RMD_final.pdf: l'output in formato PDF del medesimo file, per una fruizione più chiara.
+*RMD_final.pdf*: l'output in formato PDF del medesimo file, per una fruizione più chiara.
 
-CARTELLA_IMMAGINI: le immagini topografiche adoperate per la stima volumetrica degli edifici U1 e U6
+*CARTELLA_IMMAGINI*: le immagini topografiche adoperate per la stima volumetrica degli edifici U1 e U6
 
 *eng*
 
