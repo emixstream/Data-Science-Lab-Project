@@ -9,7 +9,6 @@ Sono presenti 2 file e 1 cartella d'immagini topografiche:
 
 *DS_LAB_script.pdf*: l'output in formato PDF del medesimo file, per una accessibilità immediata.
 
-*CARTELLA_IMMAGINI*: le immagini topografiche adoperate per la stima volumetrica degli edifici U1 e U6
 
 *eng*
 
@@ -19,4 +18,3 @@ There are 2 files and 1 folder of topographic images:
 
 *DS_LAB_script.pdf*: the PDF output of the same file, for a immediate accessibility.
 
-*CARTELLA_IMMAGINI*: the topographic images used for the volumetric estimation of the buildings U1 and U6
