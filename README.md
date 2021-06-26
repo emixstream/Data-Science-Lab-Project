@@ -7,7 +7,7 @@ Prject members:
 
 ### Marco Branciforti
 
-### Valerio schips
+### Valerio Schips
 
 Project Title:
 
