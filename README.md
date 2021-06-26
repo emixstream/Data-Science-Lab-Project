@@ -1,6 +1,19 @@
 # Data-Science-Lab-Project
 This folder contains the attachments of the Data Science Lab project
 
+Prject members:
+
+Emanuele Marnati
+
+Marco Branciforti
+
+Valerio schips
+
+Project Title:
+
+## BICCOCA-ENERGY ASSESSMENT: TRA PANDEMIA, SPRECHI E NUOVE PROPOSTE DI GESTIONE ENERGETICA
+
+
 *ita*
 
 Sono presenti 2 file e 1 cartella d'immagini topografiche:
